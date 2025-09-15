@@ -1,1 +1,340 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>フォトコン ギャラリー（デモ版）</title>
+  <!-- Tailwind（CDN・ビルド不要） -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* モーダルのスクロール対策 */
+    .no-scroll { overflow: hidden; }
+  </style>
+</head>
+<body class="min-h-screen bg-gray-50">
+  <!-- Header -->
+  <header class="sticky top-0 z-10 bg-sky-500 text-white shadow">
+    <div class="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
+      <h1 class="text-lg sm:text-2xl font-bold">フォトコンテスト ギャラリー</h1>
+      <nav class="text-sm sm:text-base space-x-4">
+        <a href="#" class="hover:underline">募集要項</a>
+        <a href="#" class="hover:underline">結果発表</a>
+      </nav>
+    </div>
+  </header>
 
+  <!-- Main -->
+  <main class="mx-auto max-w-6xl px-4 pb-16">
+    <!-- 概要＋デモ操作パネル -->
+    <section class="pt-6">
+      <div class="rounded-2xl bg-white shadow-sm border border-gray-100 p-4 sm:p-6">
+        <h2 class="text-xl font-semibold">フォトコンテスト</h2>
+        <p class="text-gray-600 text-sm mt-1">
+          開催中の作品を表示しています。会場ごとにスクロールしてご覧ください。
+        </p>
+
+        <div class="mt-4 flex flex-col sm:flex-row sm:items-center gap-3">
+          <label class="inline-flex items-center gap-2">
+            <input id="demoToggle" type="checkbox" />
+            <span class="text-sm text-gray-700">デモ自動追加（ライブ風）</span>
+          </label>
+          <label class="inline-flex items-center gap-2">
+            <span class="text-sm text-gray-700">間隔(秒)</span>
+            <input id="intervalInput" type="number" min="1"
+                   class="w-20 rounded-md border border-gray-300 px-2 py-1 text-sm" value="4" />
+          </label>
+          <button id="addOneBtn"
+                  class="text-sm rounded-md bg-sky-600 text-white px-3 py-1.5 hover:bg-sky-700">
+            手動で1件追加
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 会場セクション -->
+    <section id="venues" class="mt-6 space-y-10"></section>
+
+    <!-- 無限ロードの番兵 -->
+    <div id="sentinel" class="h-12 flex items-center justify-center text-gray-500"></div>
+  </main>
+
+  <!-- Lightbox Modal -->
+  <div id="lightbox" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm
+                           items-center justify-center p-4">
+    <div class="max-w-5xl w-full max-h-[90vh]" onclick="event.stopPropagation()">
+      <div class="relative rounded-xl overflow-hidden bg-black">
+        <img id="lightboxImage" src="" alt="拡大画像"
+             class="w-full h-auto max-h-[70vh] object-contain" />
+        <button id="closeLightbox"
+                class="absolute top-2 right-2 rounded-full bg-white/90 px-3 py-1 text-sm
+                       font-semibold shadow hover:bg-white">閉じる</button>
+      </div>
+      <div class="bg-white rounded-xl shadow mt-3 p-4">
+        <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
+          <div>
+            <div id="lbTitle" class="text-base sm:text-lg font-semibold text-gray-800"></div>
+            <div id="lbMeta"  class="text-gray-600 text-sm"></div>
+          </div>
+          <div id="lbTakenAt" class="text-gray-500 text-xs sm:text-sm"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /** ===========================
+     *  データと設定（編集ポイント）
+     *  ===========================
+     */
+    const VENUES = ["会場A", "会場B", "会場C"]; // セクションの並び
+    const PAGE_SIZE = 18;     // 初期ロードで表示する枚数
+    const MORE_PAGES = 5;     // 追加ロードの最大回数（無限スクロールの上限）
+    const STATE = {
+      groups: {},             // { venue: PhotoItem[] }
+      page: 0,                // 読み込み済みページ数
+      timer: null,            // 自動追加タイマー
+      demoIntervalMs: 4000,   // デモ間隔
+      demoOn: false,
+      canLoadMore: true,
+      active: null            // Lightbox表示中のアイテム
+    };
+
+    /** 初期化 */
+    document.addEventListener("DOMContentLoaded", () => {
+      // 会場セクションを先に描画
+      VENUES.forEach(v => STATE.groups[v] = []);
+      renderAll();
+
+      // 初期ページ読み込み
+      loadNextPage();
+
+      // UIイベント
+      const toggle = document.getElementById("demoToggle");
+      const intervalInput = document.getElementById("intervalInput");
+      const addOne = document.getElementById("addOneBtn");
+      const sentinel = document.getElementById("sentinel");
+      const lightbox = document.getElementById("lightbox");
+      const closeBtn = document.getElementById("closeLightbox");
+
+      // URLパラメータによる自動設定
+      const params = new URLSearchParams(location.search);
+      if (params.get("demo") === "1") {
+        toggle.checked = true;
+        STATE.demoOn = true;
+      }
+      const rate = Number(params.get("rate") || "");
+      if (!Number.isNaN(rate) && rate > 0) {
+        intervalInput.value = String(rate);
+        STATE.demoIntervalMs = Math.max(1000, rate * 1000);
+      }
+      applyDemoTimer();
+
+      toggle.addEventListener("change", () => {
+        STATE.demoOn = toggle.checked;
+        applyDemoTimer();
+      });
+      intervalInput.addEventListener("change", () => {
+        const secs = Math.max(1, Number(intervalInput.value || "1"));
+        STATE.demoIntervalMs = secs * 1000;
+        applyDemoTimer();
+      });
+      addOne.addEventListener("click", () => addDemoItem());
+
+      // 無限スクロール
+      const io = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) {
+            loadNextPage();
+          }
+        }
+      }, { rootMargin: "600px 0px" });
+      io.observe(sentinel);
+
+      // Lightbox
+      lightbox.addEventListener("click", closeLightbox);
+      closeBtn.addEventListener("click", closeLightbox);
+
+      // Escで閉じる
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") closeLightbox();
+      });
+    });
+
+    /** デモ自動追加のタイマー適用 */
+    function applyDemoTimer() {
+      if (STATE.timer) {
+        clearInterval(STATE.timer);
+        STATE.timer = null;
+      }
+      if (STATE.demoOn) {
+        STATE.timer = setInterval(() => addDemoItem(), STATE.demoIntervalMs);
+      }
+    }
+
+    /** 疑似ページ読み込み（picsumでダミー画像生成） */
+    function loadNextPage() {
+      if (!STATE.canLoadMore) return;
+      const next = STATE.page + 1;
+      if (next > MORE_PAGES) {
+        STATE.canLoadMore = false;
+        document.getElementById("sentinel").textContent = "全ての作品を表示しました";
+        return;
+      }
+      // 疑似API待ち
+      setLoading(true);
+      setTimeout(() => {
+        const startIndex = (next - 1) * PAGE_SIZE;
+        const items = Array.from({ length: PAGE_SIZE }).map((_, i) => {
+          const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,7)}`;
+          const v = VENUES[(startIndex + i) % VENUES.length];
+          const img = `https://picsum.photos/seed/${id}/900/900`;
+          const thumb = `https://picsum.photos/seed/${id}/400/400`;
+          return {
+            id,
+            venue: v,
+            imageUrl: img,
+            thumbUrl: thumb,
+            title: `作品タイトル #${startIndex + i + 1}`,
+            author: `投稿者${((startIndex + i) % 9) + 1}`,
+            takenAt: new Date(Date.now() - (startIndex + i) * 86400000).toISOString(),
+          };
+        });
+        // 会場ごとに追加
+        items.forEach(item => {
+          STATE.groups[item.venue].push(item);
+        });
+        STATE.page = next;
+        setLoading(false);
+        renderAll();
+      }, 500);
+    }
+
+    /** 会場のどれかに新着1件を先頭追加（デモ） */
+    function addDemoItem(targetVenue) {
+      const venues = Object.keys(STATE.groups);
+      const v = targetVenue || venues[Math.floor(Math.random() * Math.max(venues.length, 1))] || "会場A";
+      const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,7)}`;
+      const img = `https://picsum.photos/seed/${id}/900/900`;
+      const thumb = `https://picsum.photos/seed/${id}/400/400`;
+      const item = {
+        id,
+        venue: v,
+        imageUrl: img,
+        thumbUrl: thumb,
+        title: `新着作品 ${new Date().toLocaleTimeString()}`,
+        author: `demo-user${Math.floor(Math.random()*90)+10}`,
+        takenAt: new Date().toISOString(),
+      };
+      STATE.groups[v].unshift(item); // 先頭に挿入＝新着強調
+      renderVenue(v);
+    }
+
+    /** ローディング表示切り替え */
+    function setLoading(isLoading) {
+      const sentinel = document.getElementById("sentinel");
+      sentinel.textContent = isLoading ? "読み込み中…" : "さらに読み込む…";
+    }
+
+    /** 全会場レンダリング */
+    function renderAll() {
+      const root = document.getElementById("venues");
+      root.innerHTML = "";
+      for (const v of VENUES) {
+        root.appendChild(renderVenueSection(v, STATE.groups[v]));
+      }
+    }
+
+    /** 会場セクション単体を描画 or 更新 */
+    function renderVenue(venue) {
+      const root = document.getElementById("venues");
+      const old = document.getElementById(`section-${venue}`);
+      const section = renderVenueSection(venue, STATE.groups[venue]);
+      if (old) {
+        root.replaceChild(section, old);
+      } else {
+        root.appendChild(section);
+      }
+    }
+
+    /** 会場セクション要素を作る */
+    function renderVenueSection(venue, items) {
+      const section = document.createElement("section");
+      section.id = `section-${venue}`;
+
+      section.innerHTML = `
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-lg sm:text-xl font-bold text-gray-800">${venue}</h3>
+          <span class="text-xs sm:text-sm text-gray-500">${items.length} 件</span>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3">
+          ${items.map(item => `
+            <button class="group relative block aspect-square overflow-hidden rounded-lg bg-gray-100 shadow-sm"
+                    aria-label="${escapeHtml(item.title || "写真を開く")}"
+                    data-id="${item.id}">
+              <img src="${item.thumbUrl || item.imageUrl}" alt="${escapeHtml(item.title || "作品サムネイル")}"
+                   loading="lazy"
+                   class="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105" />
+              <div class="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+              <div class="pointer-events-none absolute bottom-0 left-0 right-0 p-2 sm:p-2.5 text-white text-xs sm:text-sm">
+                <div class="font-semibold truncate">${escapeHtml(item.title || "タイトル未設定")}</div>
+                <div class="opacity-90 truncate">${escapeHtml(item.author || "投稿者非公開")}</div>
+              </div>
+            </button>
+          `).join("")}
+        </div>
+        ${items.length === 0 ? `<div class="py-8 text-center text-gray-500 text-sm">まだ作品がありません</div>` : ""}
+      `;
+
+      // クリックでLightbox
+      section.querySelectorAll("button[data-id]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const id = btn.getAttribute("data-id");
+          const item = findItemById(id);
+          if (item) openLightbox(item);
+        });
+      });
+
+      return section;
+    }
+
+    /** IDからアイテム検索 */
+    function findItemById(id) {
+      for (const v of Object.keys(STATE.groups)) {
+        const found = STATE.groups[v].find(x => x.id === id);
+        if (found) return found;
+      }
+      return null;
+    }
+
+    /** Lightbox 開く */
+    function openLightbox(item) {
+      STATE.active = item;
+      const el = document.getElementById("lightbox");
+      document.getElementById("lightboxImage").src = item.imageUrl;
+      document.getElementById("lbTitle").textContent = item.title || "タイトル未設定";
+      document.getElementById("lbMeta").textContent  = `${item.author || "投稿者非公開"} ／ ${item.venue}`;
+      document.getElementById("lbTakenAt").textContent = item.takenAt
+        ? `撮影日: ${new Date(item.takenAt).toLocaleDateString()}`
+        : "";
+      el.classList.remove("hidden");
+      el.classList.add("flex");
+      document.body.classList.add("no-scroll");
+    }
+
+    /** Lightbox 閉じる */
+    function closeLightbox() {
+      STATE.active = null;
+      const el = document.getElementById("lightbox");
+      el.classList.add("hidden");
+      el.classList.remove("flex");
+      document.body.classList.remove("no-scroll");
+    }
+
+    /** XSS対策：テキストをエスケープ */
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+  </script>
+</body>
+</html>
