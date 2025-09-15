@@ -19,7 +19,8 @@
     demoOn: false,
     demoIntervalMs: 4000,
     timer: null,
-    active: null           // モーダルで表示中のアイテム
+    active: null,          // モーダルで表示中のアイテム
+    sortMode: 'new'        // 'new' | 'popular'
   };
 
   // ===== util =====
@@ -62,6 +63,12 @@
     }
     applyDemoTimer();
 
+    // 並び替えタブ
+    const tabNew = document.getElementById('tabNew');
+    const tabPopular = document.getElementById('tabPopular');
+    tabNew.addEventListener('click', (e)=>{ e.preventDefault(); setSortMode('new'); });
+    tabPopular.addEventListener('click', (e)=>{ e.preventDefault(); setSortMode('popular'); });
+
     demoToggle.addEventListener('change', () => {
       STATE.demoOn = demoToggle.checked; applyDemoTimer();
     });
@@ -88,6 +95,19 @@
     if(STATE.demoOn){ STATE.timer = setInterval(()=>addDemoItem(), STATE.demoIntervalMs); }
   }
 
+  function setSortMode(mode){
+    STATE.sortMode = mode;
+    // タブの見た目を更新
+    document.getElementById('tabNew').classList.toggle('active', mode==='new');
+    document.getElementById('tabNew').setAttribute('aria-selected', String(mode==='new'));
+    document.getElementById('tabPopular').classList.toggle('active', mode==='popular');
+    document.getElementById('tabPopular').setAttribute('aria-selected', String(mode==='popular'));
+    // 再描画
+    renderAll();
+  }
+    if(STATE.demoOn){ STATE.timer = setInterval(()=>addDemoItem(), STATE.demoIntervalMs); }
+  }
+
   // 疑似ページ読み込み
   function loadNextPage(){
     if(!STATE.canLoadMore) return;
@@ -108,7 +128,9 @@
         return { id, venue:v, imageUrl:img, thumbUrl:thumb,
           title:`作品タイトル #${startIndex+i+1}`,
           author:`投稿者${((startIndex+i)%9)+1}`,
-          takenAt:new Date(Date.now()-(startIndex+i)*86400000).toISOString() };
+          takenAt:new Date(Date.now()-(startIndex+i)*86400000).toISOString(),
+          likes: Math.floor(Math.random()*120) // 0-119 の仮人気度
+        };
       });
       items.forEach(it=> STATE.groups[it.venue].push(it));
       STATE.page = next;
@@ -126,7 +148,9 @@
     const item = { id, venue:v, imageUrl:img, thumbUrl:thumb,
       title:`新着作品 ${new Date().toLocaleTimeString()}`,
       author:`demo-user${Math.floor(Math.random()*90)+10}`,
-      takenAt:new Date().toISOString() };
+      takenAt:new Date().toISOString(),
+      likes: Math.floor(Math.random()*120)
+    };
     STATE.groups[v].unshift(item);
     renderVenue(v);
   }
@@ -159,23 +183,32 @@
       <span class="badge text-bg-secondary badge-count">${items.length} 件</span>
     </div>`);
 
-    const grid = el(`<div class="row g-2 g-sm-3"></div>`);
-    items.forEach(item => {
+    // 並び替え
+    const sorted = [...items];
+    if (STATE.sortMode === 'popular') {
+      sorted.sort((a,b)=> (b.likes||0)-(a.likes||0) || new Date(b.takenAt||0)-new Date(a.takenAt||0));
+    } else { // 'new'
+      sorted.sort((a,b)=> new Date(b.takenAt||0)-new Date(a.takenAt||0));
+    }
+
+    const grid = el(`<div class="row g-2 g-sm-3"></div>`);(`<div class="row g-2 g-sm-3"></div>`);
+    sorted.forEach(item => {
       const col = el(`<div class="col-6 col-sm-4 col-md-3 col-lg-2"></div>`);
       const card = el(`<button type="button" class="w-100 border-0 bg-transparent p-0 text-start" aria-label="${escapeHtml(item.title||'写真を開く')}"></button>`);
-      const thumbWrap = el(`<div class="card-thumb ratio ratio-1x1 shadow-sm"></div>`);
+      const thumbWrap = el(`<div class="card-thumb ratio ratio-1x1 shadow-sm position-relative"></div>`);
       const img = el(`<img class="w-100 h-100 object-fit-cover" loading="lazy" alt="${escapeHtml(item.title||'作品サムネイル')}">`);
       img.src = item.thumbUrl || item.imageUrl;
       thumbWrap.appendChild(img);
+      const likeBadge = el(`<span class="badge text-bg-danger position-absolute top-0 end-0 m-2">♥ ${item.likes||0}</span>`);
+      thumbWrap.appendChild(likeBadge);
       const overlay = el(`<div class="position-absolute bottom-0 start-0 end-0 p-2" style="background:linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,.55) 100%);">
         <div class="text-white small fw-semibold text-truncate">${escapeHtml(item.title||'タイトル未設定')}</div>
         <div class="text-white-50 small text-truncate">${escapeHtml(item.author||'投稿者非公開')}</div>
       </div>`);
       thumbWrap.appendChild(overlay);
-      card.appendChild(thumbWrap);
-
       card.addEventListener('click', ()=> openLightbox(item));
       col.appendChild(card);
+      card.appendChild(thumbWrap);
       grid.appendChild(col);
     });
 
@@ -198,4 +231,3 @@
     STATE.modal.show();
   }
 })();
-
